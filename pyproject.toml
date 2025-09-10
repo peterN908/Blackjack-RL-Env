@@ -1,0 +1,25 @@
+[project]
+name = "blackjack-env"
+description = "Multi-turn Blackjack environment with EV-based scoring"
+tags = ["blackjack", "games", "multi-turn", "eval"]
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.3.post0",
+    "datasets>=2.18.0",
+]
+
+[project.scripts]
+blackjack-play = "blackjack_env_cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+    "blackjack_env.py",
+    "strategy.py",
+    "blackjack_env_cli.py",
+    "README.md",
+]
