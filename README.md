@@ -115,14 +115,19 @@ Allowed actions are: `HIT`, `STAND`, `DOUBLE`, `SPLIT`.
 | Metric | Meaning |
 | ------ | ------- |
 | `reward` | Weighted sum of metrics (EV + format) |
+| `delta_ev_sum` | Sum over turns of EV(action|state) − EV(baseline|state) |
 | `ev_reward` | Monte Carlo expected value of the first action (bets) |
 | `realized_return_metric` | Realized total result of the entire hand (bets) |
 | `format_reward_func` | Parser’s format reward for well-formed tags |
 
 Reward computation:
-- Rubric combines `ev_reward` (weight `1.0`) and `format_reward_func` (weight `0.1`).
-- `ev_reward` is computed via Monte Carlo from the initial state using the chosen first action and a fixed continuation policy (basic strategy). Values typically range from about `-2.0` to `+3.0` for split/double cases (measured in bets), but most scenarios lie in `[-1.0, +1.5]`.
-- `realized_return_metric` reports the actual outcome of the played hand using the environment’s exact dealing sequence; treat this as the “overall score” for that rollout.
+- Main reward: `reward = delta_ev_sum + 0.1 × format_reward_func`.
+- `delta_ev_sum`: For each assistant turn t, we compute Q_t = EV(action|state_t) and V_t = EV(baseline|state_t) using Monte Carlo with the same random stream (low-variance). We add (Q_t − V_t) across all turns (including split hands). Baseline is the basic‑strategy policy adjusted to allowed actions for that state.
+- `ev_reward`: Still logged (weight 0) — EV of the first action only from the initial state (continuation via basic strategy). Typical ranges: about `−2.0` to `+3.0` in bets for doubles/splits; most spots `−1.0` to `+1.5`.
+- `realized_return_metric`: The actual one‑off outcome of the hand from the environment’s deal; a useful “overall score” but not included in the main reward by default (weight 0).
+
+Performance note:
+- Per‑turn EV uses `ev_samples` simulations at each assistant turn; runtime scales with turns × `ev_samples` × examples × repeats. Use smaller `ev_samples` for speed or increase for tighter estimates.
 
 ### Prompt Format
 Each example starts with a state prompt (rules, your hand, dealer upcard). The model responds with an action; the environment updates the state and continues until the hand is resolved. Respond using:

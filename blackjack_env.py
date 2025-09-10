@@ -374,6 +374,7 @@ class BlackjackMultiEnv(vf.MultiTurnEnv):
         state["can_split"] = [len(state["hands"][0]) == 2 and state["hands"][0][0] == state["hands"][0][1]]
         state["doubled"] = [False]
         state["first_action"] = None
+        state["delta_ev_sum"] = 0.0
         state["first_state"] = {
             "shoe": copy.deepcopy(state["shoe"]),
             "player": list(state["hands"][0]),
@@ -398,10 +399,45 @@ class BlackjackMultiEnv(vf.MultiTurnEnv):
         if state["first_action"] is None and action in ACTIONS:
             state["first_action"] = action
 
-        # Validate and apply action
-        if action not in ACTIONS or action not in _allowed_actions(hand, can_double, can_split):
+        # Validate and compute marginal EV shaping
+        allowed_now = _allowed_actions(hand, can_double, can_split)
+        if action not in ACTIONS or action not in allowed_now:
             msg = f"Invalid action. Allowed: {', '.join(_allowed_actions(hand, can_double, can_split))}. Try again."
             return [{"role": "user", "content": msg}], state
+
+        # Compute per-turn delta EV: Q(action|state) - V(policy|state)
+        try:
+            baseline = strategy.policy_action_general(
+                hand,
+                state["dealer_up"],
+                s17=rules.get("s17", True),
+                das=rules.get("das", True),
+                double_11_vs_ace=rules.get("double_11_vs_ace", False),
+            )
+            if baseline not in allowed_now:
+                baseline = "STAND" if "STAND" in allowed_now else ("HIT" if "HIT" in allowed_now else allowed_now[0])
+            crn_seed = 12345
+            Q = _ev_of_action(
+                action=action,
+                shoe=copy.deepcopy(state["shoe"]),
+                player_cards=list(hand),
+                dealer_up=state["dealer_up"],
+                rules=dict(rules),
+                rng=random.Random(crn_seed),
+                samples=self.ev_samples,
+            )
+            V = _ev_of_action(
+                action=baseline,
+                shoe=copy.deepcopy(state["shoe"]),
+                player_cards=list(hand),
+                dealer_up=state["dealer_up"],
+                rules=dict(rules),
+                rng=random.Random(crn_seed),
+                samples=self.ev_samples,
+            )
+            state["delta_ev_sum"] = float(state.get("delta_ev_sum", 0.0)) + float(Q - V)
+        except Exception:
+            pass
 
         shoe = state["shoe"]
         dealer_up = state["dealer_up"]
@@ -594,8 +630,8 @@ def load_environment(**kwargs) -> vf.Environment:
     rubric = vf.Rubric(parser=parser)
 
     async def ev_reward(parser, completion, state, info, **_):  # type: ignore
-        # Find first assistant action from the completion
-        action = (parser.parse_answer(completion) or "").strip().upper()
+        # Use the first recorded action if available; fallback to last parsed
+        action = (state.get("first_action") or (parser.parse_answer(completion) or "")).strip().upper()
         # Use initial state snapshot stored at setup
         first_state = state.get("first_state", {})
         if not action:
@@ -611,7 +647,16 @@ def load_environment(**kwargs) -> vf.Environment:
         )
         return float(ev)
 
-    rubric.add_reward_func(ev_reward)
+    # Keep first-action EV as a logged metric (weight 0)
+    rubric.add_reward_func(ev_reward, weight=0.0)
+    
+    # Marginal EV across all assistant turns (main reward)
+    def delta_ev_sum(state, **_):  # type: ignore
+        try:
+            return float(state.get("delta_ev_sum", 0.0))
+        except Exception:
+            return 0.0
+    rubric.add_reward_func(delta_ev_sum, weight=1.0)
     # Also report realized return (overall score of the played hand)
     async def realized_return_metric(state, **_):  # type: ignore
         try:
