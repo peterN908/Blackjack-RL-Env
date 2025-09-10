@@ -130,6 +130,35 @@ Each example starts with a state prompt (rules, your hand, dealer upcard). The m
 <answer>HIT|STAND|DOUBLE|SPLIT</answer>
 ```
 
+### Example Transcript (2–3 turns)
+
+```
+System: You are a competitive game player. In each turn, think in <think>…</think> and put the action in <answer>…</answer>.
+
+User:
+Blackjack — dealer stands on soft 17; DAS allowed; shoe: 6 deck(s).
+Your active hand: 9, 3 (total: 12). Dealer upcard: 2.
+Allowed actions: HIT, STAND, DOUBLE. Respond with one of these inside <answer>...</answer>.
+Rules details: Double only on two cards; Split only on identical pairs; one split max; Double after split only if DAS; No surrender; Blackjack pays 3:2.
+
+Assistant:
+<think>Hard 12 vs 2 is a hit.</think>
+<answer>HIT</answer>
+
+User:
+Blackjack — dealer stands on soft 17; DAS allowed; shoe: 6 deck(s).
+Your active hand: 9, 3, 5 (total: 17). Dealer upcard: 2.
+Allowed actions: HIT, STAND. Respond with one of these inside <answer>...</answer>.
+Rules details: Double only on two cards; Split only on identical pairs; one split max; Double after split only if DAS; No surrender; Blackjack pays 3:2.
+
+Assistant:
+<think>Stand on 17.</think>
+<answer>STAND</answer>
+
+User:
+Standing. Dealer: 2, 10, 6. Result: +1.0 bets. Hand over.
+```
+
 Game details shown each turn:
 - Dealer stands/hits on soft 17, DAS setting, and shoe size.
 - Allowed actions for the current hand (respecting two-card/double rules and pair/split constraints).
