@@ -1,5 +1,7 @@
 # Blackjack Basic Strategy Env
 
+Codelink: https://github.com/peterN908/Blackjack-RL-Env
+
 ### Overview
 - **Environment ID**: `blackjack-env`
 - **Short description**: Multi-turn heads-up Blackjack with EV-based scoring of the first action.
