@@ -2,6 +2,7 @@ import verifiers as vf
 from typing import List, Dict, Tuple, Any
 import random
 import copy
+import re
 
 try:
     # Optional: use Hugging Face datasets if available for convenience
@@ -50,6 +51,30 @@ def _xml_parser(use_think: bool) -> vf.Parser:
         return vf.XMLParser(fields=["think", "answer"], answer_field="answer")
     else:
         return vf.XMLParser(fields=["answer"], answer_field="answer")
+
+
+def _infer_action_from_text(text: str, allowed: List[str]) -> str:
+    """Best-effort fallback extractor for an action from raw text.
+
+    Handles common formatting mistakes like `<answer-STAND</answer>` and
+    also falls back to searching for a single allowed token.
+    """
+    allowed_upper = [a.upper() for a in allowed]
+    t = text.upper()
+    # Proper tag
+    m = re.search(r"<ANSWER\s*>\s*(HIT|STAND|DOUBLE|SPLIT)\s*</ANSWER>", t)
+    if m and m.group(1) in allowed_upper:
+        return m.group(1)
+    # Mistyped tag like <answer-STAND</answer>
+    m = re.search(r"<ANSWER[-:\s]*\s*(HIT|STAND|DOUBLE|SPLIT)\s*</ANSWER>", t)
+    if m and m.group(1) in allowed_upper:
+        return m.group(1)
+    # As a last resort, look for a single allowed token in text
+    hits = {tok for tok in ("HIT", "STAND", "DOUBLE", "SPLIT") if re.search(rf"\b{tok}\b", t)}
+    hits = [h for h in hits if h in allowed_upper]
+    if len(hits) == 1:
+        return hits[0]
+    return ""
 
 
 def _build_prompt(player: Tuple[str, str], dealer: str, rules: Dict) -> str:
@@ -402,8 +427,18 @@ class BlackjackMultiEnv(vf.MultiTurnEnv):
         # Validate and compute marginal EV shaping
         allowed_now = _allowed_actions(hand, can_double, can_split)
         if action not in ACTIONS or action not in allowed_now:
-            msg = f"Invalid action. Allowed: {', '.join(_allowed_actions(hand, can_double, can_split))}. Try again."
-            return [{"role": "user", "content": msg}], state
+            # Try to salvage from raw text content (common formats like <answer-STAND</answer>)
+            raw = last_msg.get("content", "") if isinstance(last_msg, dict) else ""
+            fallback = _infer_action_from_text(raw, allowed_now)
+            if fallback in ACTIONS and fallback in allowed_now:
+                action = fallback
+            else:
+                examples = " | ".join([f"<answer>{a}</answer>" for a in allowed_now])
+                msg = (
+                    f"Invalid action. Allowed: {', '.join(allowed_now)}.\n"
+                    f"Reply exactly with one of: {examples}"
+                )
+                return [{"role": "user", "content": msg}], state
 
         # Compute per-turn delta EV: Q(action|state) - V(policy|state)
         try:
@@ -677,4 +712,5 @@ def load_environment(**kwargs) -> vf.Environment:
         parser=parser,
         rubric=rubric,
         ev_samples=ev_samples,
+        max_turns=int(env_args.get("max_turns", 12)),
     )
