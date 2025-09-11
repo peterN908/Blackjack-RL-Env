@@ -401,6 +401,7 @@ class BlackjackMultiEnv(vf.MultiTurnEnv):
         state["doubled"] = [False]
         state["first_action"] = None
         state["delta_ev_sum"] = 0.0
+        state["format_salvaged"] = False
         state["first_state"] = {
             "shoe": copy.deepcopy(state["shoe"]),
             "player": list(state["hands"][0]),
@@ -433,6 +434,7 @@ class BlackjackMultiEnv(vf.MultiTurnEnv):
             fallback = _infer_action_from_text(raw, allowed_now)
             if fallback in ACTIONS and fallback in allowed_now:
                 action = fallback
+                state["format_salvaged"] = True
             else:
                 examples = " | ".join([f"<answer>{a}</answer>" for a in allowed_now])
                 msg = (
@@ -712,7 +714,24 @@ def load_environment(**kwargs) -> vf.Environment:
         except Exception:
             return 0.0
     rubric.add_reward_func(realized_return_metric, weight=0.0)
-    rubric.add_reward_func(parser.get_format_reward_func(), weight=0.1)
+
+    # Strict format reward: give credit only if parser format passes AND we did not salvage
+    base_format_fn = parser.get_format_reward_func()
+
+    def strict_format_reward(parser, completion, state, answer=None, **_):  # type: ignore
+        try:
+            base = float(base_format_fn(parser=parser, completion=completion, answer=answer))
+        except TypeError:
+            # Some implementations may not require all args
+            try:
+                base = float(base_format_fn(completion))
+            except Exception:
+                base = 0.0
+        if state.get("format_salvaged", False):
+            return 0.0
+        return base
+
+    rubric.add_reward_func(strict_format_reward, weight=0.1)
 
     # System prompt mirrors Wordle phrasing and keeps formatting guidance out of example prompts
     system_prompt = (
