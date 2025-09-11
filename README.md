@@ -1,6 +1,6 @@
 # Blackjack Basic Strategy Env
 
-**Source Code Repository:** [https://github.com/peterN908/Blackjack-RL-Env](https://github.com/peterN908/Blackjack-RL-Env)
+**Source Code Repository:** [https://github.com/peterN908/blackjack_env](https://github.com/peterN908/blackjack_env)
 
 ### Overview
 - **Environment ID**: `blackjack-env`

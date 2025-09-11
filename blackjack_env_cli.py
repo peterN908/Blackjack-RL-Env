@@ -8,6 +8,7 @@ from blackjack_env import (
     _dealer_play,
     _format_state_message,
     _allowed_actions,
+    _infer_action_from_text,
 )
 
 
@@ -31,12 +32,19 @@ def play_once(args) -> float:
     while True:
         allowed = _allowed_actions(player, can_double, can_split)
         print(_format_state_message(player, dealer_up, rules, allowed))
-        action = input("Your action (HIT/STAND/DOUBLE/SPLIT, or Q to quit hand): ").strip().upper()
-        if action in ("Q", "QUIT"):
+        raw = input("Your action (HIT/STAND/DOUBLE/SPLIT, or Q to quit hand): ").strip()
+        if raw.upper() in ("Q", "QUIT"):
             print("Hand aborted.")
             return 0.0
+        # Accept either plain tokens or XML-ish tags
+        parsed = _infer_action_from_text(raw, allowed)
+        action = parsed if parsed else raw.upper()
         if action not in allowed:
-            print(f"Invalid action. Allowed: {', '.join(allowed)}\n")
+            examples = " | ".join([f"<answer>{a}</answer>" for a in allowed])
+            print(
+                f"Invalid action. Allowed: {', '.join(allowed)}\n"
+                f"Type one of: {', '.join(allowed)} (no tags), or reply exactly with: {examples}\n"
+            )
             continue
         if action == "HIT":
             player.append(_draw(shoe, rng))
@@ -103,9 +111,15 @@ def play_once(args) -> float:
                 while True:
                     allowed_h = _allowed_actions(hand, can_double_h, False)
                     print(_format_state_message(hand, dealer_up, rules, allowed_h))
-                    act = input("Action for this hand: ").strip().upper()
+                    act_raw = input("Action for this hand: ").strip()
+                    act_parsed = _infer_action_from_text(act_raw, allowed_h)
+                    act = act_parsed if act_parsed else act_raw.upper()
                     if act not in allowed_h:
-                        print(f"Invalid. Allowed: {', '.join(allowed_h)}\n")
+                        examples = " | ".join([f"<answer>{a}</answer>" for a in allowed_h])
+                        print(
+                            f"Invalid. Allowed: {', '.join(allowed_h)}\n"
+                            f"Type one of: {', '.join(allowed_h)} (no tags), or reply exactly with: {examples}\n"
+                        )
                         continue
                     if act == "HIT":
                         hand.append(_draw(shoe, rng))
@@ -185,4 +199,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
