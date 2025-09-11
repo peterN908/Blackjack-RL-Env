@@ -70,11 +70,18 @@ def _infer_action_from_text(text: str, allowed: List[str]) -> str:
     m = re.search(r"<ANSWER[-:\s]*\s*(HIT|STAND|DOUBLE|SPLIT)\s*</ANSWER>", t)
     if m and m.group(1) in allowed_upper:
         return m.group(1)
-    # As a last resort, look for a single allowed token in text
-    hits = {tok for tok in ("HIT", "STAND", "DOUBLE", "SPLIT") if re.search(rf"\b{tok}\b", t)}
-    hits = [h for h in hits if h in allowed_upper]
-    if len(hits) == 1:
-        return hits[0]
+    # As a last resort, pick the earliest occurrence of any allowed token
+    best = ""
+    best_pos = 10**9
+    for tok in ("HIT", "STAND", "DOUBLE", "SPLIT"):
+        if tok not in allowed_upper:
+            continue
+        m = re.search(rf"\b{tok}\b", t)
+        if m and m.start() < best_pos:
+            best = tok
+            best_pos = m.start()
+    if best:
+        return best
     return ""
 
 
@@ -373,9 +380,10 @@ def _format_state_message(active_cards: List[str], dealer_up: str, rules: Dict, 
 
 
 class BlackjackMultiEnv(vf.MultiTurnEnv):
-    def __init__(self, ev_samples: int = 200, **kwargs):
+    def __init__(self, ev_samples: int = 200, max_format_retries: int = 3, **kwargs):
         super().__init__(**kwargs)
         self.ev_samples = ev_samples
+        self.max_format_retries = max_format_retries
 
     async def is_completed(self, messages, state, **kwargs) -> bool:  # type: ignore
         return bool(state.get("done", False))
@@ -402,6 +410,8 @@ class BlackjackMultiEnv(vf.MultiTurnEnv):
         state["first_action"] = None
         state["delta_ev_sum"] = 0.0
         state["format_salvaged"] = False
+        state["invalid_tries"] = 0
+        state["max_format_retries"] = self.max_format_retries
         state["first_state"] = {
             "shoe": copy.deepcopy(state["shoe"]),
             "player": list(state["hands"][0]),
@@ -436,12 +446,31 @@ class BlackjackMultiEnv(vf.MultiTurnEnv):
                 action = fallback
                 state["format_salvaged"] = True
             else:
-                examples = " | ".join([f"<answer>{a}</answer>" for a in allowed_now])
-                msg = (
-                    f"Invalid action. Allowed: {', '.join(allowed_now)}.\n"
-                    f"Reply exactly with one of: {examples}"
-                )
-                return [{"role": "user", "content": msg}], state
+                # Increment invalid tries; after N retries, auto-apply baseline and continue
+                state["invalid_tries"] = int(state.get("invalid_tries", 0)) + 1
+                if state["invalid_tries"] >= int(state.get("max_format_retries", 3)):
+                    baseline = strategy.policy_action_general(
+                        hand,
+                        state["dealer_up"],
+                        s17=rules.get("s17", True),
+                        das=rules.get("das", True),
+                        double_11_vs_ace=rules.get("double_11_vs_ace", False),
+                    )
+                    if baseline not in allowed_now:
+                        baseline = "STAND" if "STAND" in allowed_now else ("HIT" if "HIT" in allowed_now else allowed_now[0])
+                    action = baseline
+                    state["format_salvaged"] = True
+                else:
+                    examples = " | ".join([f"<answer>{a}</answer>" for a in allowed_now])
+                    msg = (
+                        f"Invalid action. Allowed: {', '.join(allowed_now)}.\n"
+                        f"Put the action directly between <answer>...</answer> tags with no extra text.\n"
+                        f"Reply exactly with one of: {examples}"
+                    )
+                    return [{"role": "user", "content": msg}], state
+
+        # reset invalid tries on a valid action
+        state["invalid_tries"] = 0
 
         # Compute per-turn delta EV: Q(action|state) - V(policy|state)
         try:
@@ -745,4 +774,5 @@ def load_environment(**kwargs) -> vf.Environment:
         rubric=rubric,
         ev_samples=ev_samples,
         max_turns=int(env_args.get("max_turns", 12)),
+        max_format_retries=int(env_args.get("max_format_retries", 3)),
     )

@@ -43,6 +43,7 @@ def play_once(args) -> float:
             examples = " | ".join([f"<answer>{a}</answer>" for a in allowed])
             print(
                 f"Invalid action. Allowed: {', '.join(allowed)}\n"
+                f"Put the action directly between <answer>...</answer> tags with no extra text.\n"
                 f"Type one of: {', '.join(allowed)} (no tags), or reply exactly with: {examples}\n"
             )
             continue
@@ -118,6 +119,7 @@ def play_once(args) -> float:
                         examples = " | ".join([f"<answer>{a}</answer>" for a in allowed_h])
                         print(
                             f"Invalid. Allowed: {', '.join(allowed_h)}\n"
+                            f"Put the action directly between <answer>...</answer> tags with no extra text.\n"
                             f"Type one of: {', '.join(allowed_h)} (no tags), or reply exactly with: {examples}\n"
                         )
                         continue

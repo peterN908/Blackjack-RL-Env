@@ -107,6 +107,8 @@ Gameplay:
 | `ev_samples` | int | `200` | Monte Carlo samples for EV estimation of the first action |
 | `rules.num_decks` | int | `6` | Force number of decks when `randomize_rules=false` |
 | `randomize_rules` | bool | `true` | Randomize S17/H17, DAS, and num decks per example; if `false`, use `rules.*` values |
+| `max_turns` | int | `12` | Safety cap: end rollout after this many assistant turns |
+| `max_format_retries` | int | `3` | After N invalid/malformed answers in a turn, auto-apply baseline action and continue |
 
 Allowed actions are: `HIT`, `STAND`, `DOUBLE`, `SPLIT`.
 
@@ -123,6 +125,7 @@ Allowed actions are: `HIT`, `STAND`, `DOUBLE`, `SPLIT`.
 Reward computation:
 - Main reward: `reward = delta_ev_sum + 0.1 × format_reward_func`.
 - `delta_ev_sum`: For each assistant turn t, we compute Q_t = EV(action|state_t) and V_t = EV(baseline|state_t) using Monte Carlo with the same random stream (low-variance). We add (Q_t − V_t) across all turns (including split hands). Baseline is the basic‑strategy policy adjusted to allowed actions for that state.
+- Malformed answers: The env accepts lenient forms (e.g., `<answer-STAND</answer>`); if it must salvage formatting, the format bonus is set to 0 for that turn. After `max_format_retries` invalid attempts in a single turn, the env auto-applies the baseline action and moves on.
 - `ev_reward`: Still logged (weight 0) — EV of the first action only from the initial state (continuation via basic strategy). Typical ranges: about `−2.0` to `+3.0` in bets for doubles/splits; most spots `−1.0` to `+1.5`.
 - `realized_return_metric`: The actual one‑off outcome of the hand from the environment’s deal; a useful “overall score” but not included in the main reward by default (weight 0).
 
