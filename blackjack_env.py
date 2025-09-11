@@ -3,6 +3,7 @@ from typing import List, Dict, Tuple, Any
 import random
 import copy
 import re
+from importlib.metadata import version as _pkg_version, PackageNotFoundError
 
 try:
     # Optional: use Hugging Face datasets if available for convenience
@@ -629,6 +630,18 @@ def load_environment(**kwargs) -> vf.Environment:
       - max_examples: int = -1
       - rules: dict = {"s17": True, "das": True, "double_11_vs_ace": False}
     """
+    # Print installed package version for easier debugging
+    _version = "unknown"
+    for dist_name in ("blackjack-env", "blackjack_env"):
+        try:
+            _version = _pkg_version(dist_name)
+            break
+        except PackageNotFoundError:
+            continue
+    try:
+        print(f"[blackjack-env] package version: {_version}")
+    except Exception:
+        pass
     # Support being called with either env_args dict or flattened kwargs
     env_args: Dict = (kwargs.get("env_args") if "env_args" in kwargs else kwargs) or {}
     max_examples: int = int(env_args.get("max_examples", -1))
