@@ -12,6 +12,3 @@ __pycache__/
 
 # Project outputs
 outputs/
-
-# Sample training script
-sample_training_script.py
