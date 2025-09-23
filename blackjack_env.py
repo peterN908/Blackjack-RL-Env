@@ -653,6 +653,81 @@ def _generate_multistep_examples(
     return examples
 
 
+def _generate_singleturn_examples(
+    total: int,
+    rng: random.Random,
+    forced_rules: Dict[str, Any] | None = None,
+    randomize_rules: bool = True,
+    allow_midgame: bool = True,
+) -> List[Dict[str, Any]]:
+    """Create random single-step Blackjack states (initial or mid-hand).
+
+    Each example contains a `prompt` string for single-turn usage and an `info` dict
+    with the full environment state necessary to evaluate EV for any chosen action.
+    """
+    examples: List[Dict[str, Any]] = []
+    forced_rules = forced_rules or {}
+    for _ in range(total):
+        if randomize_rules:
+            num_decks = forced_rules.get("num_decks", rng.choice([1, 2, 4, 6, 8]))
+            s17 = forced_rules.get("s17", rng.choice([True, False]))
+            das = forced_rules.get("das", rng.choice([True, False]))
+            double_11_vs_ace = forced_rules.get("double_11_vs_ace", rng.choice([False, True]))
+        else:
+            num_decks = forced_rules.get("num_decks", 6)
+            s17 = forced_rules.get("s17", True)
+            das = forced_rules.get("das", True)
+            double_11_vs_ace = forced_rules.get("double_11_vs_ace", False)
+        rules = {"s17": s17, "das": das, "double_11_vs_ace": double_11_vs_ace, "num_decks": num_decks}
+
+        shoe = _new_shoe(num_decks, rng)
+
+        # Start with initial two cards
+        player = [_draw(shoe, rng), _draw(shoe, rng)]
+        # With probability, extend into a valid mid-hand (not bust)
+        if allow_midgame and rng.random() < 0.6:
+            target_len = rng.randint(3, 5)
+            while len(player) < target_len:
+                card = _draw(shoe, rng)
+                candidate = player + [card]
+                total, _ = _hand_totals(candidate)
+                if total > 21:
+                    break
+                player = candidate
+
+        dealer_up = _draw(shoe, rng)
+
+        can_double = (len(player) == 2)
+        can_split = (len(player) == 2 and player[0] == player[1])
+        allowed = _allowed_actions(player, can_double=can_double, can_split=can_split)
+
+        prompt = _format_state_message(player, dealer_up, rules, allowed)
+        examples.append(
+            {
+                # Single-turn expects chat-style prompts; provide a user message.
+                "prompt": [{"role": "user", "content": prompt}],
+                "question": prompt,  # keep string for compatibility with other tooling
+                "answer": "",
+                "info": {
+                    "seed": rng.randrange(1 << 30),
+                    "s17": s17,
+                    "das": das,
+                    "double_11_vs_ace": rules["double_11_vs_ace"],
+                    "num_decks": num_decks,
+                    "shoe": shoe,
+                    "player_cards": player,
+                    "dealer_up": dealer_up,
+                },
+            }
+        )
+    return examples
+
+
+class BlackjackSingleEnv(vf.SingleTurnEnv):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+
 def load_environment(**kwargs) -> vf.Environment:
     """
     Blackjack basic-strategy evaluation environment.
@@ -687,10 +762,140 @@ def load_environment(**kwargs) -> vf.Environment:
         "double_11_vs_ace": bool(rules.get("double_11_vs_ace", False)),
     }
 
-    # Build dataset: multi-step random scenarios
+    # Common configuration
     rng = random.Random(env_args.get("seed", None))
     default_total = 200
     total = max_examples if max_examples and max_examples > 0 else default_total
+
+    mode = str(env_args.get("mode", "")).strip().lower()
+    if not mode:
+        mode = "single" if bool(env_args.get("single_turn", False)) else "multi"
+
+    # Parser
+    parser = _xml_parser(use_think)
+
+    # System prompt mirrors Wordle phrasing and keeps formatting guidance out of example prompts
+    system_prompt = (
+        THINK_ANSWER_SYSTEM_PROMPT if use_think else NO_THINK_SYSTEM_PROMPT
+    ) + f"\n\nValid actions: {', '.join(ACTIONS)}."
+
+    if mode in ("single", "single_turn", "single-turn"):
+        # Build dataset: single-turn random scenarios (including mid-hand)
+        examples = _generate_singleturn_examples(total, rng, forced_rules=rules, randomize_rules=randomize_rules)
+        if max_examples and max_examples > 0:
+            examples = examples[: max_examples]
+
+        if HFDataset is not None:
+            dataset = HFDataset.from_list(examples)
+        else:
+            # verifiers.SingleTurnEnv can read `prompt` and `answer`
+            dataset = examples  # type: ignore
+
+        # Reward: marginal EV of chosen action relative to basic strategy
+        rubric = vf.Rubric(parser=parser)
+
+        async def marginal_ev_reward(parser, completion, state, info, **_):  # type: ignore
+            action = (parser.parse_answer(completion) or "").strip().upper()
+            rules_local: Dict[str, Any] = {
+                "s17": bool(info.get("s17", True)),
+                "das": bool(info.get("das", True)),
+                "double_11_vs_ace": bool(info.get("double_11_vs_ace", False)),
+                "num_decks": int(info.get("num_decks", 6)),
+            }
+            player_cards = list(info.get("player_cards", []))
+            dealer_up = str(info.get("dealer_up", "10"))
+            can_double = (len(player_cards) == 2)
+            can_split = (len(player_cards) == 2 and player_cards[0] == player_cards[1])
+            allowed_now = _allowed_actions(player_cards, can_double=can_double, can_split=can_split)
+            if action not in ACTIONS or action not in allowed_now:
+                return -1.0
+
+            baseline = strategy.policy_action_general(
+                player_cards,
+                dealer_up,
+                s17=rules_local.get("s17", True),
+                das=rules_local.get("das", True),
+                double_11_vs_ace=rules_local.get("double_11_vs_ace", False),
+            )
+            if baseline not in allowed_now:
+                baseline = "STAND" if "STAND" in allowed_now else ("HIT" if "HIT" in allowed_now else allowed_now[0])
+
+            crn_seed = 12345
+            Q = _ev_of_action(
+                action=action,
+                shoe=copy.deepcopy(info.get("shoe", {})),
+                player_cards=list(player_cards),
+                dealer_up=dealer_up,
+                rules=dict(rules_local),
+                rng=random.Random(crn_seed),
+                samples=ev_samples,
+            )
+            V = _ev_of_action(
+                action=baseline,
+                shoe=copy.deepcopy(info.get("shoe", {})),
+                player_cards=list(player_cards),
+                dealer_up=dealer_up,
+                rules=dict(rules_local),
+                rng=random.Random(crn_seed),
+                samples=ev_samples,
+            )
+            return float(Q - V)
+
+        rubric.add_reward_func(marginal_ev_reward, weight=1.0)
+
+        # Track absolute EV of chosen action (metric only)
+        async def chosen_action_ev(parser, completion, state, info, **_):  # type: ignore
+            action = (parser.parse_answer(completion) or "").strip().upper()
+            rules_local: Dict[str, Any] = {
+                "s17": bool(info.get("s17", True)),
+                "das": bool(info.get("das", True)),
+                "double_11_vs_ace": bool(info.get("double_11_vs_ace", False)),
+                "num_decks": int(info.get("num_decks", 6)),
+            }
+            player_cards = list(info.get("player_cards", []))
+            dealer_up = str(info.get("dealer_up", "10"))
+            can_double = (len(player_cards) == 2)
+            can_split = (len(player_cards) == 2 and player_cards[0] == player_cards[1])
+            allowed_now = _allowed_actions(player_cards, can_double=can_double, can_split=can_split)
+            if action not in ACTIONS or action not in allowed_now:
+                return -1.0
+            return float(
+                _ev_of_action(
+                    action=action,
+                    shoe=copy.deepcopy(info.get("shoe", {})),
+                    player_cards=list(player_cards),
+                    dealer_up=dealer_up,
+                    rules=dict(rules_local),
+                    rng=random.Random(42),
+                    samples=ev_samples,
+                )
+            )
+
+        rubric.add_reward_func(chosen_action_ev, weight=0.0)
+
+        # Strict format reward (no salvage state in single-turn path)
+        base_format_fn = parser.get_format_reward_func()
+
+        def strict_format_reward(parser, completion, state=None, answer=None, **_):  # type: ignore
+            try:
+                return float(base_format_fn(parser=parser, completion=completion, answer=answer))
+            except TypeError:
+                try:
+                    return float(base_format_fn(completion))
+                except Exception:
+                    return 0.0
+
+        rubric.add_reward_func(strict_format_reward, weight=0.1)
+
+        return BlackjackSingleEnv(
+            dataset=dataset,
+            system_prompt=system_prompt,
+            parser=parser,
+            rubric=rubric,
+            max_turns=1,
+        )
+
+    # Default: Build dataset for multi-step random scenarios
     examples = _generate_multistep_examples(total, rng, forced_rules=rules, randomize_rules=randomize_rules)
     if max_examples and max_examples > 0:
         examples = examples[: max_examples]
@@ -701,9 +906,6 @@ def load_environment(**kwargs) -> vf.Environment:
         # Fallback: verifiers supports HF datasets; if unavailable, pass raw list
         # (SingleTurnEnv will attempt to read 'prompt' / 'answer' keys from items)
         dataset = examples  # type: ignore
-
-    # Parser and rubric
-    parser = _xml_parser(use_think)
 
     # Reward: EV of the first action under Monte Carlo continuation policy
     rubric = vf.Rubric(parser=parser)
@@ -761,11 +963,6 @@ def load_environment(**kwargs) -> vf.Environment:
         return base
 
     rubric.add_reward_func(strict_format_reward, weight=0.1)
-
-    # System prompt mirrors Wordle phrasing and keeps formatting guidance out of example prompts
-    system_prompt = (
-        THINK_ANSWER_SYSTEM_PROMPT if use_think else NO_THINK_SYSTEM_PROMPT
-    ) + f"\n\nValid actions: {', '.join(ACTIONS)}."
 
     return BlackjackMultiEnv(
         dataset=dataset,

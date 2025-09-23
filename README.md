@@ -4,20 +4,22 @@
 
 ### Overview
 - **Environment ID**: `blackjack-env`
-- **Short description**: Multi-turn heads-up Blackjack with EV-based scoring of the first action.
-- **Tags**: blackjack, games, multi-turn, eval
+- **Short description**: Multi-turn heads-up Blackjack with EV shaping, plus a single-turn mode that scores the marginal EV of the chosen move.
+- **Tags**: blackjack, games, multi-turn, single-turn, eval
 
 ### Datasets
-- **Primary dataset**: Programmatically generated randomized Blackjack states (shoe size, S17/H17, DAS, initial deal).
+- **Primary dataset**: Programmatically generated randomized Blackjack states (shoe size, S17/H17, DAS).
+  - Multi-turn: initial deal states.
+  - Single-turn: initial or mid-hand states (double only on two cards; pairs/split constraints respected).
 - **Source**: On-load generator with basic-strategy continuation policy for EV estimation (see `strategy.py`).
 - **Size**: Controlled by `max_examples` (defaults to 200 if unspecified). Each evaluation uses fresh random scenarios (optionally fixed by `seed`).
 
 ### Task
-- **Type**: multi-turn (chat)
+- **Type**: multi-turn and single-turn (chat)
 - **Parser**: XMLParser expecting `<think>` and `<answer>` tags
 - **Rubric overview**:
-  - EV of the first action (Monte Carlo expected value in units of bets)
-  - Format reward from parser for well-formed XML tags
+  - Multi-turn: EV of the first action (logged), marginal EV shaping across turns (main), plus format reward.
+  - Single-turn: marginal EV of the chosen move relative to basic strategy (main), plus format reward; absolute EV is logged.
 
 ### Quickstart
 Run an evaluation with default settings:
@@ -48,6 +50,21 @@ uv run vf-eval blackjack-env \
 Notes:
 - Use `-a` / `--env-args` to pass environment-specific configuration as a JSON object.
 - The model should output the action inside `<answer>...</answer>` and may include reasoning in `<think>...</think>`.
+
+#### Single-turn Quickstart
+
+Run a single-turn evaluation (one state → one action; reward = marginal EV of the move):
+
+```bash
+uv run vf-eval blackjack-env 
+  -m gpt-4.1-mini \
+  -n 10 -r 3 -t 1024 -T 0.5 \
+  -a '{"mode":"single", "ev_samples": 200, "randomize_rules": true}'
+```
+or equivalently:
+```bash
+uv run vf-eval blackjack-env -a '{"single_turn": true, "ev_samples": 200}'
+```
 
 Parameters (configure model and sampling):
 - `-m/--model`: model name on your OpenAI-compatible endpoint (e.g., `gpt-4.1-mini`).
@@ -109,6 +126,8 @@ Gameplay:
 | `randomize_rules` | bool | `true` | Randomize S17/H17, DAS, and num decks per example; if `false`, use `rules.*` values |
 | `max_turns` | int | `12` | Safety cap: end rollout after this many assistant turns |
 | `max_format_retries` | int | `3` | After N invalid/malformed answers in a turn, auto-apply baseline action and continue |
+| `mode` | string | unset | When set to `"single"`, run single-turn mode; otherwise multi-turn |
+| `single_turn` | bool | `false` | Convenience flag; equivalent to `mode="single"` when true |
 
 Allowed actions are: `HIT`, `STAND`, `DOUBLE`, `SPLIT`.
 
@@ -121,6 +140,12 @@ Allowed actions are: `HIT`, `STAND`, `DOUBLE`, `SPLIT`.
 | `ev_reward` | Monte Carlo expected value of the first action (bets) |
 | `realized_return_metric` | Realized total result of the entire hand (bets) |
 | `format_reward_func` | Parser’s format reward for well-formed tags |
+
+Single-turn mode:
+- `reward` = `marginal_ev_reward + 0.1 × strict_format_reward`
+- `marginal_ev_reward`: EV(action|state) − EV(baseline|state) using a common random seed
+- `chosen_action_ev`: Absolute EV of the chosen action (logged)
+- `strict_format_reward`: Parser format score
 
 Reward computation:
 - Main reward: `reward = delta_ev_sum + 0.1 × format_reward_func`.
@@ -183,14 +208,16 @@ Game details shown each turn:
 - Dealer upcard: the dealer’s face-up card; the face-down card is the “hole” and is revealed when the dealer plays.
 
 ### How Evaluation Runs
-- The dataset pre-generates randomized scenarios (shoe size, S17/H17, DAS, initial hands) and provides a `question` per example with the initial state.
-- Chat loop per example:
-  - System message instructs formatting; user shows current state and allowed actions.
-  - Assistant replies with `<answer>...</answer>`; the environment applies the action, deals cards, and posts the updated state.
-  - Continues until the hand is finished (bust/stand/double for all hands including split).
-- Scoring:
-  - `ev_reward`: Monte Carlo EV of the first action only (continuation policy = basic strategy). This gives a principled, model-agnostic value of the initial decision.
-  - `format_reward_func`: structural correctness bonus.
+- Multi-turn:
+  - The dataset pre-generates randomized scenarios (initial hands) and provides a `question` per example with the initial state.
+  - Chat loop per example:
+    - System message instructs formatting; user shows current state and allowed actions.
+    - Assistant replies with `<answer>...</answer>`; the environment applies the action, deals cards, and posts the updated state.
+    - Continues until the hand is finished (bust/stand/double for all hands including split).
+  - Scoring: marginal EV shaping across turns (main), EV of first action logged, plus format reward.
+- Single-turn:
+  - The dataset provides a single state (initial or mid-hand). The model outputs exactly one action.
+  - Scoring: marginal EV of the chosen move relative to baseline (main), absolute EV logged, plus format reward.
 
 ### Saving Results
 - By default, results are not saved to disk.
